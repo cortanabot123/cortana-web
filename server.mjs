@@ -159,7 +159,8 @@ function safeUploadName(header) {
   if (typeof header !== "string" || header.length > 1024) return null
   let decoded
   try { decoded = decodeURIComponent(header) } catch { return null }
-  const name = decoded.split(/[\\/]/).at(-1).replace(/[\\u0000-\\u001f\\u007f]/g, "").trim().slice(0, 255)
+  // oxlint-disable-next-line no-control-regex -- deliberately strip C0/DEL control characters from uploaded file names
+  const name = decoded.split(/[\\/]/).at(-1).replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 255)
   return name || "uploaded-file"
 }
 
