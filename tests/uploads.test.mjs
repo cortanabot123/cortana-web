@@ -18,6 +18,39 @@ async function withServer(options, run) {
   }
 }
 
+test("uploads preserve filename characters and strip control characters", async () => {
+  const uploadRoot = await mkdtemp(path.join(tmpdir(), "cortana-upload-names-test-"))
+  const auth = `Basic ${Buffer.from("upload-user:upload-password").toString("base64")}`
+  const credentials = { host: "0.0.0.0", accessUsername: "upload-user", accessPassword: "upload-password", uploadRoot }
+  const filenames = [
+    ["ABC123.txt", "ABC123.txt"],
+    ["a-B_c9.tar.gz", "a-B_c9.tar.gz"],
+    ["%E4%B8%AD%E6%96%872021.pdf", "中文2021.pdf"],
+    ["README.md", "README.md"],
+    ["profile.png", "profile.png"],
+    ["bad%00name%7F.txt", "badname.txt"],
+  ]
+  try {
+    await withServer(credentials, async (base) => {
+      for (const [filename, expectedName] of filenames) {
+        const response = await fetch(`${base}/api/uploads`, {
+          method: "POST",
+          headers: { authorization: auth, origin: base, "x-file-name": filename },
+          body: new Uint8Array([1]),
+        })
+        assert.equal(response.status, 201)
+        const uploaded = await response.json()
+        assert.equal(uploaded.name, expectedName)
+        assert.ok(path.isAbsolute(uploaded.path))
+        assert.ok(uploaded.path.startsWith(uploadRoot + path.sep))
+        assert.notEqual((await fetch(`${base}${uploaded.path}`)).status, 200, "uploaded files must not be downloadable through static serving")
+      }
+    })
+  } finally {
+    await rm(uploadRoot, { recursive: true, force: true })
+  }
+})
+
 test("uploads preserve arbitrary binary bytes in a private opaque path and reject auth, origin, and size violations", async () => {
   const uploadRoot = await mkdtemp(path.join(tmpdir(), "cortana-uploads-test-"))
   const auth = `Basic ${Buffer.from("upload-user:upload-password").toString("base64")}`
