@@ -1,0 +1,9 @@
+#!/command/with-contenv sh
+# s6 service: standalone Cortana Web (static SPA + /api/gateway BFF) on :3000.
+# with-contenv imports the container environment, which carries the dashboard credentials.
+export HOME=/opt/data
+cd /opt/data/workspace/Cortana || exit 1
+if [ "$(id -u)" = 0 ]; then
+  exec s6-setuidgid hermes ./scripts/start-cortana.sh
+fi
+exec ./scripts/start-cortana.sh
