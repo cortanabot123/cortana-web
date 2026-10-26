@@ -33,35 +33,14 @@ test("backticked, fenced and prose-delivered MEDIA tokens all resolve", () => {
   assert.equal(rewriteAgentMedia(`MEDIA:${file})`), image, "trailing bracket is stripped")
 })
 
-test("bare absolute paths in prose render too, which is how the agent usually reports files", () => {
-  const image = "/opt/data/workspace/随手一张.svg"
-  assert.equal(
-    rewriteAgentMedia(`给你一张日落风景图：${image}`),
-    `给你一张日落风景图：![随手一张.svg](<${url(image)}>)`,
-  )
-  assert.equal(
-    rewriteAgentMedia(`再给你一张山间清晨图：/opt/data/workspace/山间清晨.svg`),
-    `再给你一张山间清晨图：![山间清晨.svg](<${url("/opt/data/workspace/山间清晨.svg")}>)`,
-  )
-  const sheet = "/opt/data/workspace/2221_facade.dxf"
-  assert.equal(rewriteAgentMedia(`图纸在这里 ${sheet}`), `图纸在这里 [2221_facade.dxf](<${url(sheet, true)}>)`)
-  assert.equal(rewriteAgentMedia(`图：/opt/data/workspace/a.svg。好看`), `图：![a.svg](<${url("/opt/data/workspace/a.svg")}>)` + "。好看", "CJK punctuation ends the path")
-  assert.equal(rewriteAgentMedia("见 `" + image + "` 这个文件"), "见 ![随手一张.svg](<" + url(image) + ">) 这个文件", "a code span holding one path renders")
-  assert.equal(rewriteAgentMedia("`open('/opt/data/workspace/x.png')`"), "`open('/opt/data/workspace/x.png')`", "a code span holding code stays literal")
-  assert.equal(rewriteAgentMedia("```\n" + image + "\n```"), "```\n![随手一张.svg](<" + url(image) + ">)\n```", "a fence holding one path is a delivery wrapper")
-  assert.equal(rewriteAgentMedia("![remote](https://example.com/a.png)"), "![remote](https://example.com/a.png)", "remote URLs are never touched")
-})
-
 test("code samples, partial tokens and repeated rewrites stay untouched", () => {
   const sample = "```bash\nMEDIA:/opt/data/workspace/probe.png\necho done\n```"
   assert.equal(rewriteAgentMedia(sample), sample, "a fence that is not a pure MEDIA wrapper is code")
-  assert.equal(rewriteAgentMedia("```python\nopen('/opt/data/workspace/x.png')\n```"), "```python\nopen('/opt/data/workspace/x.png')\n```", "paths inside a real code fence are code")
   assert.equal(rewriteAgentMedia("MEDIA:/opt/da"), "MEDIA:/opt/da", "a streaming partial path is not rewritten")
   assert.equal(rewriteAgentMedia("MEDIA:/opt/data/workspace"), "MEDIA:/opt/data/workspace", "a directory has no extension")
+  assert.equal(rewriteAgentMedia("我在 /opt/data/workspace/probe.svg 里画了"), "我在 /opt/data/workspace/probe.svg 里画了", "a bare path in prose is not a delivery token")
   const once = rewriteAgentMedia("MEDIA:/opt/data/workspace/probe.svg")
   assert.equal(rewriteAgentMedia(once), once, "rewriting is idempotent")
-  const bare = rewriteAgentMedia("图：/opt/data/workspace/probe.svg")
-  assert.equal(rewriteAgentMedia(bare), bare, "bare-path rewriting is idempotent")
 })
 
 test("markdown image destinations pointing at local files are routed through the file API", () => {
