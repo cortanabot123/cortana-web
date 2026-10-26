@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, statSync } from "node:fs"
+import { createReadStream, existsSync, realpathSync, statSync } from "node:fs"
 import { chmod, mkdir, open, rm } from "node:fs/promises"
 import { randomUUID, timingSafeEqual, createHash, createHmac } from "node:crypto"
 import { isIP } from "node:net"
@@ -11,16 +11,33 @@ import { fileURLToPath } from "node:url"
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 const MIME_TYPES = {
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
+  ".csv": "text/csv; charset=utf-8",
   ".css": "text/css; charset=utf-8",
+  ".dxf": "application/dxf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".gif": "image/gif",
   ".html": "text/html; charset=utf-8",
   ".ico": "image/x-icon",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".mp3": "audio/mpeg",
+  ".mp4": "video/mp4",
+  ".pdf": "application/pdf",
   ".png": "image/png",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ".svg": "image/svg+xml",
   ".txt": "text/plain; charset=utf-8",
-  ".webmanifest": "application/manifest+json; charset=utf-8",
+  ".wav": "audio/wav",
+  ".webm": "video/webm",
   ".webp": "image/webp",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".zip": "application/zip",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
   ".woff2": "font/woff2",
 }
 
@@ -225,6 +242,69 @@ async function receiveUpload(request, response, uploadRoot) {
   }
 }
 
+function serveAgentFile(request, response, fileRoots) {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    response.writeHead(405, { allow: "GET, HEAD", "content-type": "application/json; charset=utf-8" }).end(JSON.stringify({ error: "Method not allowed" }))
+    return
+  }
+  const requestedPath = new URL(request.url, "http://localhost").searchParams.get("path")
+  if (!requestedPath || !path.isAbsolute(requestedPath) || requestedPath.includes("\u0000")) {
+    sendText(response, 400, "A valid absolute path is required")
+    return
+  }
+  if (requestedPath.split(/[\\/]/).some((segment) => segment.startsWith("."))) {
+    sendText(response, 400, "Dotfile paths are not allowed")
+    return
+  }
+
+  let filePath
+  try {
+    filePath = realpathSync(path.resolve(requestedPath))
+  } catch {
+    sendText(response, 404, "File not found")
+    return
+  }
+  const isAllowed = fileRoots.some((root) => {
+    try {
+      const realRoot = realpathSync(path.resolve(root))
+      return filePath === realRoot || filePath.startsWith(`${realRoot}${path.sep}`)
+    } catch {
+      return false
+    }
+  })
+  if (!isAllowed) {
+    sendText(response, 403, "File access is not allowed")
+    return
+  }
+  let fileStat
+  try { fileStat = statSync(filePath) } catch {
+    sendText(response, 404, "File not found")
+    return
+  }
+  if (!fileStat.isFile()) {
+    sendText(response, 404, "File not found")
+    return
+  }
+
+  const extension = path.extname(filePath).toLowerCase()
+  const inlineSafe = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".bmp"].includes(extension)
+    || MIME_TYPES[extension]?.startsWith("text/") || extension === ".json" || extension === ".pdf"
+  const headers = {
+    "content-type": MIME_TYPES[extension] ?? "application/octet-stream",
+    "content-length": fileStat.size,
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, max-age=300",
+  }
+  const download = new URL(request.url, "http://localhost").searchParams.get("download") === "1"
+  if (download || !inlineSafe) {
+    const encodedName = encodeURIComponent(path.basename(filePath)).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+    headers["content-disposition"] = `attachment; filename*=UTF-8''${encodedName}`
+  }
+  response.writeHead(200, headers)
+  if (request.method === "HEAD") response.end()
+  else pipeline(createReadStream(filePath), response, (error) => { if (error && !response.destroyed) response.destroy(error) })
+}
+
 function serveStatic(request, response, distDir) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     response.writeHead(405, { allow: "GET, HEAD" }).end()
@@ -379,6 +459,16 @@ function rejectUpgrade(socket, status, message) {
 export function createAppServer({
   distDir = path.join(ROOT, "dist"),
   uploadRoot = path.join(process.env.TMPDIR || "/opt/data/cache/scratch", "cortana-uploads"),
+  fileRoots = process.env.CORTANA_FILE_ROOTS !== undefined
+    ? process.env.CORTANA_FILE_ROOTS.split(":").filter(Boolean)
+    // Agent-produced files live in the workspace, in Hermes' scratch dir, in the persona audio
+    // cache, and in the upload dir; nothing else on the host is reachable through /api/files.
+    : [
+      path.join("/opt/data", "workspace"),
+      path.join("/opt/data", "cache", "scratch"),
+      path.join("/opt/data", "audio_cache"),
+      uploadRoot,
+    ],
   fetchImpl = fetch,
   host = getListenHost(),
   accessUsername = process.env.CORTANA_ACCESS_USERNAME,
@@ -421,6 +511,10 @@ export function createAppServer({
     }
     if (pathname === "/api/uploads") {
       void receiveUpload(request, response, uploadRoot)
+      return
+    }
+    if (pathname === "/api/files") {
+      serveAgentFile(request, response, fileRoots)
       return
     }
     if (pathname === "/api/gateway/status" && request.method === "GET") {
