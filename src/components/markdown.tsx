@@ -5,7 +5,6 @@ import remarkGfm from "remark-gfm"
 
 import { CodeBlock, CodeBlockContent, CodeBlockLine } from "@/components/ui/code-block"
 import { useHighlightedCode } from "@/hooks/use-highlighted-code"
-import { rewriteAgentMedia } from "@/lib/file-links"
 import { cn } from "cn"
 
 /** Flattens react-markdown children into the plain text of a code fence. */
@@ -70,22 +69,9 @@ const components: Partial<Components> = {
       href={href}
       target="_blank"
       rel="noreferrer"
-      data-slot={href?.startsWith("/api/files?") ? "file-attachment" : undefined}
       className="font-medium text-primary underline underline-offset-4"
     >
       {children}
-    </a>
-  ),
-  img: ({ src, alt }) => (
-    <a href={src} target="_blank" rel="noreferrer">
-      <img
-        data-slot="markdown-image"
-        src={src}
-        alt={alt ?? ""}
-        loading="lazy"
-        decoding="async"
-        className="my-2 h-auto max-h-[60vh] w-auto max-w-full rounded-lg border border-border"
-      />
     </a>
   ),
   ul: ({ children }) => (
@@ -131,8 +117,6 @@ export function Markdown({
   children: string
   className?: string
 }) {
-  const rewrittenChildren = React.useMemo(() => rewriteAgentMedia(children), [children])
-
   return (
     <div
       className={cn(
@@ -141,7 +125,7 @@ export function Markdown({
       )}
     >
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
-        {rewrittenChildren}
+        {children}
       </ReactMarkdown>
     </div>
   )
