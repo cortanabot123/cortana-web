@@ -3,8 +3,10 @@ import ReactMarkdown, { type Components } from "react-markdown"
 import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
 
+import { FileCard } from "@/components/file-card"
 import { CodeBlock, CodeBlockContent, CodeBlockLine } from "@/components/ui/code-block"
 import { useHighlightedCode } from "@/hooks/use-highlighted-code"
+import { parseFileDirective, stripFileDirectives } from "@/lib/file-directives"
 import { cn } from "cn"
 
 /** Flattens react-markdown children into the plain text of a code fence. */
@@ -63,7 +65,11 @@ const components: Partial<Components> = {
       {children}
     </code>
   ),
-  p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
+  p: ({ children }) => {
+    const directive = parseFileDirective(toText(children))
+    if (directive) return <FileCard path={directive.path} />
+    return <p className="my-2 first:mt-0 last:mb-0">{children}</p>
+  },
   a: ({ children, href }) => (
     <a
       href={href}
@@ -117,6 +123,12 @@ export function Markdown({
   children: string
   className?: string
 }) {
+  const markdown = React.useMemo(() => children.split(/(\r?\n)/).map((part, index) => {
+    if (index % 2 === 1) return part
+    if (parseFileDirective(part)) return `\n\n${part}\n\n`
+    return stripFileDirectives(part)
+  }).join(""), [children])
+
   return (
     <div
       className={cn(
@@ -125,7 +137,7 @@ export function Markdown({
       )}
     >
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
-        {children}
+        {markdown}
       </ReactMarkdown>
     </div>
   )

@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, statSync } from "node:fs"
+import { createReadStream, existsSync, realpathSync, statSync } from "node:fs"
 import { chmod, mkdir, open, rm } from "node:fs/promises"
 import { randomUUID, timingSafeEqual, createHash, createHmac } from "node:crypto"
 import { isIP } from "node:net"
@@ -11,16 +11,37 @@ import { fileURLToPath } from "node:url"
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 const MIME_TYPES = {
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
+  ".csv": "text/csv; charset=utf-8",
   ".css": "text/css; charset=utf-8",
+  ".dxf": "image/vnd.dxf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".gif": "image/gif",
+  ".heic": "image/heic",
   ".html": "text/html; charset=utf-8",
   ".ico": "image/x-icon",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".mp3": "audio/mpeg",
+  ".mp4": "video/mp4",
+  ".pdf": "application/pdf",
   ".png": "image/png",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ".svg": "image/svg+xml",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
   ".txt": "text/plain; charset=utf-8",
+  ".wav": "audio/wav",
+  ".webm": "video/webm",
   ".webmanifest": "application/manifest+json; charset=utf-8",
   ".webp": "image/webp",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".zip": "application/zip",
+  ".dwg": "image/vnd.dwg",
   ".woff2": "font/woff2",
 }
 
@@ -225,6 +246,64 @@ async function receiveUpload(request, response, uploadRoot) {
   }
 }
 
+function serveAgentFile(request, response, roots) {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    response.setHeader("allow", "GET, HEAD")
+    sendText(response, 405, "Method not allowed")
+    return
+  }
+  const query = new URL(request.url, "http://localhost").searchParams
+  const requestedPath = query.get("path")
+  if (!requestedPath || requestedPath.includes("\u0000") || !path.isAbsolute(requestedPath)) {
+    sendText(response, 400, "A valid absolute file path is required")
+    return
+  }
+  if (requestedPath.split(/[\\/]/).some((segment) => segment.startsWith("."))) {
+    sendText(response, 400, "Dotfiles are not available")
+    return
+  }
+
+  let realPath
+  try {
+    realPath = realpathSync(path.resolve(requestedPath))
+  } catch {
+    sendText(response, 404, "File not found")
+    return
+  }
+  const allowed = roots.some((root) => realPath === root || realPath.startsWith(`${root}${path.sep}`))
+  if (!allowed) {
+    sendText(response, 403, "File is outside the allowed roots")
+    return
+  }
+  let info
+  try { info = statSync(realPath) } catch {
+    sendText(response, 404, "File not found")
+    return
+  }
+  if (!info.isFile()) {
+    sendText(response, 404, "File not found")
+    return
+  }
+
+  const ext = path.extname(realPath).toLowerCase()
+  const inlineSafe = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".bmp"].includes(ext)
+    || (MIME_TYPES[ext] ?? "").startsWith("text/")
+    || ext === ".json" || ext === ".pdf"
+  const headers = {
+    "content-type": MIME_TYPES[ext] ?? "application/octet-stream",
+    "content-length": info.size,
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, max-age=300",
+  }
+  if (query.get("download") === "1" || !inlineSafe) {
+    const filename = encodeURIComponent(path.basename(realPath)).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+    headers["content-disposition"] = `attachment; filename*=UTF-8''${filename}`
+  }
+  response.writeHead(200, headers)
+  if (request.method === "HEAD") response.end()
+  else pipeline(createReadStream(realPath), response, (error) => { if (error && !response.destroyed) response.destroy(error) })
+}
+
 function serveStatic(request, response, distDir) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     response.writeHead(405, { allow: "GET, HEAD" }).end()
@@ -379,6 +458,9 @@ function rejectUpgrade(socket, status, message) {
 export function createAppServer({
   distDir = path.join(ROOT, "dist"),
   uploadRoot = path.join(process.env.TMPDIR || "/opt/data/cache/scratch", "cortana-uploads"),
+  fileRoots = process.env.CORTANA_FILE_ROOTS !== undefined
+    ? process.env.CORTANA_FILE_ROOTS.split(":").filter(Boolean)
+    : [path.join("/opt/data", "workspace"), path.join("/opt/data", "cache", "scratch"), path.join("/opt/data", "audio_cache"), uploadRoot],
   fetchImpl = fetch,
   host = getListenHost(),
   accessUsername = process.env.CORTANA_ACCESS_USERNAME,
@@ -395,6 +477,9 @@ export function createAppServer({
     throw new Error("CORTANA_ACCESS_USERNAME and CORTANA_ACCESS_PASSWORD are required for non-loopback binds")
   }
 
+  const allowedFileRoots = fileRoots.map((root) => {
+    try { return realpathSync(path.resolve(root)) } catch { return path.resolve(root) }
+  })
   const gateway = createHermesGatewayBridge({
     dashboardUrl,
     username: dashboardUsername,
@@ -421,6 +506,11 @@ export function createAppServer({
     }
     if (pathname === "/api/uploads") {
       void receiveUpload(request, response, uploadRoot)
+      return
+    }
+    if (pathname === "/api/files") {
+      try { serveAgentFile(request, response, allowedFileRoots) }
+      catch { sendText(response, 400, "Invalid file request") }
       return
     }
     if (pathname === "/api/gateway/status" && request.method === "GET") {
