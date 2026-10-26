@@ -25,6 +25,13 @@ function cleanPath(rawPath: string): string {
 }
 
 /**
+ * An absolute path written straight into prose (`给你一张图：/opt/data/workspace/x.svg`), which is how
+ * the agent reports files far more often than it emits a `MEDIA:` token. Latin, CJK and dashes only:
+ * a space or CJK punctuation ends the match, so a sentence never swallows its neighbours.
+ */
+const BARE_PATH = /(?<![\w/])(\/(?:[\w\u4e00-\u9fff.-]+\/)*[\w\u4e00-\u9fff.-]+\.[a-z0-9]{1,6})(?![\w])/g
+
+/**
  * Renders one agent-supplied path as markdown, or null when the token is not a file yet.
  * Any extension counts as a file (new CAD/Office/image formats outpace a whitelist); only the
  * image set renders inline, everything else becomes a download link.
@@ -37,19 +44,45 @@ function mediaMarkdown(rawPath: string): string | null {
   return isAgentImagePath(filePath) ? `![${basename}](<${url}>)` : `[${basename}](<${url}>)`
 }
 
+function rewriteBarePaths(line: string): string {
+  return line.split(/(`[^`\n]*`)/).map((part) => {
+    if (part.length > 2 && part.startsWith("`") && part.endsWith("`")) {
+      // A code span that holds nothing but an absolute path is how the agent usually quotes a file;
+      // render it, but keep spans that carry anything else (`open('/x.png')`) as literal code.
+      const inner = part.slice(1, -1).trim()
+      return /^\/[^\s`]+$/.test(inner) ? mediaMarkdown(inner) ?? part : part
+    }
+    return part.replace(BARE_PATH, (match, rawPath: string) => {
+      if (rawPath.startsWith("/api/files")) return match
+      return mediaMarkdown(rawPath) ?? match
+    })
+  }).join("")
+}
+
 function rewriteLine(line: string): string {
-  const wholeLine = MEDIA_LINE.exec(line.trim())
+  const trimmed = line.trim()
+  const wholeLine = MEDIA_LINE.exec(trimmed)
   if (wholeLine) {
     const markdown = mediaMarkdown(wholeLine[1])
     if (markdown) return markdown
   }
-  return line.replace(/`?MEDIA:(\/[^\s`]+)`?/g, (match, rawPath: string) => mediaMarkdown(rawPath) ?? match)
+  const wholePath = /^`?(\/[^\s`]+?)`?$/.exec(trimmed)
+  if (wholePath) {
+    const markdown = mediaMarkdown(wholePath[1])
+    if (markdown) return markdown
+  }
+  const tokenRewritten = line.replace(/`?MEDIA:(\/[^\s`]+)`?/g, (match, rawPath: string) => mediaMarkdown(rawPath) ?? match)
+  return rewriteBarePaths(tokenRewritten)
 }
 
-/** A fence whose whole body is MEDIA tokens is a delivery wrapper, not a code sample. */
+/** A fence whose whole body is MEDIA tokens or bare paths is a delivery wrapper, not a code sample. */
 function rewriteFence(body: string): string | null {
   const lines = body.split("\n").filter((line) => line.trim())
-  if (!lines.length || !lines.every((line) => MEDIA_LINE.test(line.trim()))) return null
+  const isDelivery = (line: string) => {
+    const content = line.trim().replace(/^`|`$/g, "")
+    return MEDIA_LINE.test(content) || (/^\/[^\s`]+$/.test(content) && FILE_EXTENSION.test(content))
+  }
+  if (!lines.length || !lines.every(isDelivery)) return null
   return lines.map(rewriteLine).join("\n")
 }
 
@@ -63,11 +96,14 @@ function rewriteLocalImage(markdown: string): string {
 export function rewriteAgentMedia(text: string): string {
   // Split on fenced code blocks: prose is rewritten freely, a fence only when its whole body is
   // MEDIA tokens, so real code samples keep their literal text.
-  const rewritten = text.split(/(```[^\n]*\n[\s\S]*?```)/g).map((part) => {
+  return text.split(/(```[^\n]*\n[\s\S]*?```)/g).map((part) => {
     const fence = /^```([^\n]*)\n([\s\S]*?)```$/.exec(part)
-    if (!fence) return part.split("\n").map(rewriteLine).join("\n")
+    if (!fence) {
+      // Local markdown image destinations first, so the prose pass below cannot nest a link inside
+      // an image destination (`![a](/abs/x.png)` must become one image, not `![a]([x.png](…))`).
+      return rewriteLocalImage(part).split("\n").map(rewriteLine).join("\n")
+    }
     const body = rewriteFence(fence[2])
     return body === null ? part : `\`\`\`${fence[1]}\n${body}\n\`\`\``
   }).join("")
-  return rewriteLocalImage(rewritten)
 }
