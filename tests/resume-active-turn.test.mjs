@@ -9,14 +9,14 @@ const launchBrowser = () => chromium.launch({
   args: ["--no-sandbox"],
 })
 
-async function openResumedTurn(persistedAssistant, { messages, inflightUser = "Recovered user prompt", inflightAssistant = "partial response" } = {}) {
+async function openResumedTurn(persistedAssistant, { messages, inflightUser = "Recovered user prompt", inflightAssistant = "partial response", turnStartedAt, inflightStartedAt } = {}) {
   const vite = await createViteServer({ configFile: "vite.config.ts", server: { host: "127.0.0.1", port: 0 } })
   await vite.listen()
   const browser = await launchBrowser()
   try {
     const page = await browser.newPage()
     await page.route("**/api/gateway/status", (route) => route.fulfill({ json: { available: true } }))
-    await page.addInitScript(({ assistantText, transcriptMessages, userText, inflightText }) => {
+    await page.addInitScript(({ assistantText, transcriptMessages, userText, inflightText, fixedTurnStartedAt, fixedInflightStartedAt }) => {
       localStorage.setItem("cortana-web.hermes.gateway-session", "stored-running-session")
       class MockWebSocket {
         static CONNECTING = 0
@@ -39,7 +39,7 @@ async function openResumedTurn(persistedAssistant, { messages, inflightUser = "R
           const result = (value) => this.emit({ jsonrpc: "2.0", id: frame.id, result: value })
           if (frame.method === "client.capabilities" || frame.method === "ping") result({})
           else if (frame.method === "session.resume") {
-            const startedAt = Date.now() / 1000 - 12
+            const startedAt = fixedTurnStartedAt ?? Date.now() / 1000 - 12
             result({
               session_id: "running-live-session",
               stored_session_id: "stored-running-session",
@@ -50,7 +50,12 @@ async function openResumedTurn(persistedAssistant, { messages, inflightUser = "R
               running: true,
               status: "working",
               turn_started_at: startedAt,
-              inflight: { user: userText, assistant: inflightText, streaming: true },
+              inflight: {
+                user: userText,
+                assistant: inflightText,
+                streaming: true,
+                ...(fixedInflightStartedAt === null || fixedInflightStartedAt === undefined ? {} : { started_at: fixedInflightStartedAt }),
+              },
               queued: null,
             })
             window.__emitTurnEvent = (type, payload = {}) => this.emit({
@@ -62,7 +67,14 @@ async function openResumedTurn(persistedAssistant, { messages, inflightUser = "R
         close() { this.readyState = MockWebSocket.CLOSED; this.onclose?.() }
       }
       window.WebSocket = MockWebSocket
-    }, { assistantText: persistedAssistant, transcriptMessages: messages, userText: inflightUser, inflightText: inflightAssistant })
+    }, {
+      assistantText: persistedAssistant,
+      transcriptMessages: messages,
+      userText: inflightUser,
+      inflightText: inflightAssistant,
+      fixedTurnStartedAt: turnStartedAt,
+      fixedInflightStartedAt: inflightStartedAt,
+    })
 
     const address = vite.httpServer.address()
     await page.goto(`http://127.0.0.1:${address.port}/`)
@@ -265,6 +277,38 @@ test("resuming unrelated inflight text leaves the previous answer untouched", { 
     await page.getByText("新回答", { exact: true }).waitFor()
     assert.equal(await contents.count(), 4, "an unmatched turn starts a separate assistant bubble on its first delta")
     assert.equal(await previousAnswer.innerText(), "上一轮答案", "the unrelated inflight text must not overwrite the previous answer")
+  } finally {
+    await close()
+  }
+})
+
+test("a session-level turn_started_at never renders hours of elapsed time", { concurrency: false }, async () => {
+  // A payload whose turn_started_at is really the session's creation time (eight hours ago) must
+  // not turn the working clock into "Working · 28800s": the indicator falls back to a fresh timer.
+  const { page, close } = await openResumedTurn("partial response", { turnStartedAt: Date.now() / 1000 - 8 * 3600 })
+  try {
+    const indicator = page.locator("[data-working-indicator]")
+    await indicator.waitFor()
+    const text = await indicator.innerText()
+    const seconds = Number(text.match(/(\d+)s/)?.[1] ?? 0)
+    assert.ok(seconds < 60, `restored elapsed time must not inherit session age, indicator text was ${text}`)
+  } finally {
+    await close()
+  }
+})
+
+test("inflight.started_at wins over turn_started_at when both are present", { concurrency: false }, async () => {
+  const now = Date.now() / 1000
+  const { page, close } = await openResumedTurn("partial response", {
+    turnStartedAt: now - 8 * 3600,
+    inflightStartedAt: now - 45,
+  })
+  try {
+    const indicator = page.locator("[data-working-indicator]")
+    await indicator.waitFor()
+    const text = await indicator.innerText()
+    const seconds = Number(text.match(/(\d+)s/)?.[1] ?? 0)
+    assert.ok(seconds >= 40 && seconds < 90, `the per-turn start should drive the clock, indicator text was ${text}`)
   } finally {
     await close()
   }

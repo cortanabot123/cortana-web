@@ -60,6 +60,7 @@ export type HermesGatewaySession = {
   inflight?: {
     user?: string | null
     assistant?: string | null
+    started_at?: number | null
     streaming?: boolean
     display_kind?: string | null
     corrections?: unknown[]

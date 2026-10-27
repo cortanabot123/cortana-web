@@ -322,9 +322,16 @@ function serveStatic(request, response, distDir) {
     return
   }
   const ext = path.extname(filePath)
+  const base = path.basename(filePath)
+  // Fingerprinted assets (bundled by Vite) are safe to cache forever; the manifest and other
+  // stable-named files are revalidated so colour/icon changes reach installed PWAs.
+  const cacheControl =
+    ext === ".html" || base === "sw.js" || ext === ".webmanifest" || base === "manifest.webmanifest"
+      ? "no-cache"
+      : "public, max-age=31536000, immutable"
   response.writeHead(200, {
     "content-type": MIME_TYPES[ext] ?? "application/octet-stream",
-    "cache-control": ext === ".html" || path.basename(filePath) === "sw.js" ? "no-cache" : "public, max-age=31536000, immutable",
+    "cache-control": cacheControl,
   })
   if (request.method === "HEAD") response.end()
   else pipeline(createReadStream(filePath), response, (error) => { if (error && !response.destroyed) response.destroy(error) })

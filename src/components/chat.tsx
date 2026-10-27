@@ -92,6 +92,9 @@ type UploadedAttachment = { name: string; path: string }
 type TranscriptEntry = ChatMessage | CommandResultMessage
 type GatewayEventTurn = { assistantId: string | null; sessionId: string; unsolicited: boolean; attention: boolean; text: string; restored?: boolean }
 const VISIBLE_STATUS_KINDS = new Set(["process", "goal", "loop", "lifecycle", "compacting"])
+// A resumed turn older than this is treated as a stale marker, not a live timer: Hermes turns
+// never run this long, so such a timestamp means the payload carried session age, not turn age.
+const MAX_RESTORED_TURN_MS = 6 * 60 * 60 * 1000
 
 function isStatusUpdatePayload(payload: Record<string, unknown>): payload is Record<string, unknown> & StatusUpdatePayload {
   return typeof payload.kind === "string" && typeof payload.text === "string"
@@ -476,6 +479,18 @@ export function Chat() {
     }).catch(scheduleGatewayReconnect)
   }
 
+  // `turn_started_at` is epoch seconds for the *current* turn. Guard against a payload that
+  // carries a session-level timestamp instead of a turn one: a turn can never have started in
+  // the future, and a resumed client must never inherit hours of elapsed time it did not see.
+  function resolveTurnStartEpoch(value: unknown): number | null {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null
+    const startedAt = value * 1000
+    const now = Date.now()
+    if (startedAt > now + 2000) return null
+    if (now - startedAt > MAX_RESTORED_TURN_MS) return null
+    return startedAt
+  }
+
   function applyReconciledSession(resumed: HermesGatewaySession) {
     const sessionId = resumed.session_id
     const savedTurn = gatewayTurnRef.current
@@ -514,9 +529,9 @@ export function Chat() {
 
     reconciledActiveRef.current = turnActiveCountRef.current === 0
     setTurnActiveCount(turnActiveCountRef.current + (reconciledActiveRef.current ? 1 : 0))
-    const startedAt = typeof resumed.turn_started_at === "number" ? resumed.turn_started_at * 1000 : Date.now()
-    setTurnStartedAt(startedAt)
-    setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
+    const startedAt = resolveTurnStartEpoch(resumed.inflight?.started_at) ?? resolveTurnStartEpoch(resumed.turn_started_at)
+    setTurnStartedAt(startedAt ?? Date.now())
+    setElapsedSeconds(startedAt === null ? 0 : Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
 
     const assistantId = matchesInflight
       ? (localTurnAssistant?.id ?? (assistantText && localLastAssistant?.content.startsWith(assistantText) ? localLastAssistant.id : null))
@@ -691,9 +706,9 @@ export function Chat() {
                 reconciledActiveRef.current = true
                 setTurnActiveCount(1)
               }
-              const startedAt = typeof resumed.turn_started_at === "number" ? resumed.turn_started_at * 1000 : Date.now()
-              setTurnStartedAt(startedAt)
-              setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
+              const startedAt = resolveTurnStartEpoch(resumed.inflight?.started_at) ?? resolveTurnStartEpoch(resumed.turn_started_at)
+              setTurnStartedAt(startedAt ?? Date.now())
+              setElapsedSeconds(startedAt === null ? 0 : Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
             }
           } finally {
             setHistoryLoading(false)
@@ -833,7 +848,7 @@ export function Chat() {
 
   React.useEffect(() => {
     if (turnStartedAt === null) return
-    const updateElapsed = () => setElapsedSeconds(Math.floor((Date.now() - turnStartedAt) / 1000))
+    const updateElapsed = () => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - turnStartedAt) / 1000)))
     updateElapsed()
     const timer = setInterval(updateElapsed, 1000)
     return () => clearInterval(timer)
