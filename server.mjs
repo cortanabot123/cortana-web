@@ -323,10 +323,11 @@ function serveStatic(request, response, distDir) {
   }
   const ext = path.extname(filePath)
   const base = path.basename(filePath)
-  // Fingerprinted assets (bundled by Vite) are safe to cache forever; the manifest and other
-  // stable-named files are revalidated so colour/icon changes reach installed PWAs.
+  // Fingerprinted assets (bundled by Vite) are safe to cache forever; the manifest, the HTML shell
+  // and the stable-named icons are revalidated so colour/icon changes reach installed PWAs.
   const cacheControl =
-    ext === ".html" || base === "sw.js" || ext === ".webmanifest" || base === "manifest.webmanifest"
+    ext === ".html" || base === "sw.js" || ext === ".webmanifest" || base === "manifest.webmanifest" ||
+    path.dirname(filePath).endsWith(`${path.sep}icons`) || base === "favicon.svg"
       ? "no-cache"
       : "public, max-age=31536000, immutable"
   response.writeHead(200, {
