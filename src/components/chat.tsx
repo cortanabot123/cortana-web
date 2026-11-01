@@ -1432,7 +1432,7 @@ export function Chat() {
                         <MessageContent>
                           {message.content ? (
                             <React.Suspense fallback={<span>{message.content}</span>}>
-                              <Markdown>{message.content}</Markdown>
+                              <Markdown streaming={busy && message === messages.at(-1)}>{message.content}</Markdown>
                             </React.Suspense>
                           ) : busy && message === messages.at(-1) ? (
                             <span aria-label="Hermes is responding" className="text-muted-foreground"><LoaderCircleIcon className="size-4 animate-spin" /></span>
