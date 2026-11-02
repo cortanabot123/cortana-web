@@ -1,7 +1,6 @@
 import * as React from "react"
 
 export const PAGE_SIZE = 30
-export const SIDEBAR_COLLAPSED_KEY = "cortana.sidebar.collapsed"
 
 export type SessionSummaryRow = {
   // The dashboard's /api/sessions returns the id as `id`; older shapes used `session_id`.
@@ -13,23 +12,6 @@ export type SessionSummaryRow = {
   started_at?: number | string | null
   ended_at?: number | string | null
   message_count?: number | string | null
-}
-
-export function loadSidebarCollapsed(): boolean {
-  try {
-    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1"
-  } catch {
-    return false
-  }
-}
-
-export function saveSidebarCollapsed(collapsed: boolean): void {
-  try {
-    if (collapsed) window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "1")
-    else window.localStorage.removeItem(SIDEBAR_COLLAPSED_KEY)
-  } catch {
-    // Keep the toggle responsive when browser persistence is blocked.
-  }
 }
 
 export function asText(value: unknown): string | null {

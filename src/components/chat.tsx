@@ -41,7 +41,6 @@ import {
 } from "@/components/ui/input-group"
 import { Message, MessageContent } from "@/components/ui/message"
 import { SessionSidebar } from "@/components/session-sidebar"
-import { loadSidebarCollapsed, saveSidebarCollapsed } from "@/hooks/use-session-list"
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -155,7 +154,6 @@ export function Chat() {
   const [error, setError] = React.useState<string | null>(null)
   const [theme, setTheme] = React.useState<ThemePreference>(() => loadThemePreference())
   const [sidebarMobileOpen, setSidebarMobileOpen] = React.useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(() => loadSidebarCollapsed())
   const [activeStoredSessionId, setActiveStoredSessionId] = React.useState<string | null>(() => loadHermesGatewaySessionId())
   const [reasoning, setReasoning] = React.useState<ReasoningEffort | null>(null)
   const [reasoningBusy, setReasoningBusy] = React.useState(false)
@@ -1227,15 +1225,7 @@ export function Chat() {
   }
 
   function toggleSidebar() {
-    if (window.matchMedia("(min-width: 1024px)").matches) {
-      setSidebarCollapsed((current) => {
-        const next = !current
-        saveSidebarCollapsed(next)
-        return next
-      })
-    } else {
-      setSidebarMobileOpen((open) => !open)
-    }
+    setSidebarMobileOpen((open) => !open)
   }
 
   React.useEffect(() => {
@@ -1376,7 +1366,6 @@ export function Chat() {
           activeSessionId={activeStoredSessionId}
           busy={busy}
           mobileOpen={sidebarMobileOpen}
-          collapsed={sidebarCollapsed}
           onSelect={(sessionId) => void selectConversation(sessionId)}
           onNewConversation={resetThread}
           onCloseMobile={() => setSidebarMobileOpen(false)}
@@ -1393,12 +1382,13 @@ export function Chat() {
         <header className="border-b border-border/70 bg-background/95 px-4 pb-3 pt-[max(env(safe-area-inset-top),0.75rem)] backdrop-blur">
           <div className="mx-auto flex w-full max-w-3xl items-start justify-between gap-3">
           <div className="flex min-w-0 items-center self-stretch">
+            {/* Desktop pins the sidebar permanently, so the toggle is a mobile-only affordance. */}
             <Button
               variant="ghost"
               size="icon"
-              className="-ml-2 mr-1 shrink-0"
+              className="-ml-2 mr-1 shrink-0 lg:hidden"
               aria-label={sidebarMobileOpen ? "Close conversation history" : "Open conversation history"}
-              aria-expanded={sidebarMobileOpen || !sidebarCollapsed}
+              aria-expanded={sidebarMobileOpen}
               aria-controls="cortana-session-sidebar"
               data-slot="sidebar-toggle"
               onClick={toggleSidebar}

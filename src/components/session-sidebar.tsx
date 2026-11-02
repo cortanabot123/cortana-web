@@ -15,7 +15,6 @@ type SessionSidebarProps = {
   activeSessionId: string | null
   busy: boolean
   mobileOpen: boolean
-  collapsed: boolean
   onSelect: (sessionId: string) => void
   onNewConversation: () => void
   onCloseMobile: () => void
@@ -26,7 +25,6 @@ export function SessionSidebar({
   activeSessionId,
   busy,
   mobileOpen,
-  collapsed,
   onSelect,
   onNewConversation,
   onCloseMobile,
@@ -94,7 +92,7 @@ export function SessionSidebar({
         mobileOpen ? "translate-x-0 visible" : "-translate-x-full invisible",
         // lg:translate-x-0 must override the mobile -translate-x-full, otherwise the
         // desktop sidebar is visible but still parked off-screen at x=-288.
-        collapsed ? "lg:hidden" : "lg:visible lg:translate-x-0",
+        "lg:visible lg:translate-x-0",
       )}
     >
       <nav aria-label="Conversation history" className="flex h-full min-h-0 flex-col gap-2 p-3">
