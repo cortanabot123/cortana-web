@@ -327,7 +327,7 @@ function serveStatic(request, response, distDir) {
   // and the stable-named icons are revalidated so colour/icon changes reach installed PWAs.
   const cacheControl =
     ext === ".html" || base === "sw.js" || ext === ".webmanifest" || base === "manifest.webmanifest" ||
-    path.dirname(filePath).endsWith(`${path.sep}icons`) || base === "favicon.svg"
+    path.dirname(filePath).endsWith(`${path.sep}icons`) || base === "favicon.svg" || base === "favicon.ico"
       ? "no-cache"
       : "public, max-age=31536000, immutable"
   response.writeHead(200, {

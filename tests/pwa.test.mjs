@@ -65,4 +65,11 @@ test("PWA registers a service worker and caches only built app-shell resources",
     assert.equal(icon.readUInt32BE(16), size)
     assert.equal(icon.readUInt32BE(20), size)
   }
+
+  const ico = await readFile(new URL("../public/favicon.ico", import.meta.url))
+  assert.equal(ico.readUInt16LE(0), 0, "favicon.ico reserved field")
+  assert.equal(ico.readUInt16LE(2), 1, "favicon.ico is an icon file")
+  const icoSizes = Array.from({ length: ico.readUInt16LE(4) }, (_, index) => ico[6 + index * 16] || 256)
+  assert.deepEqual(icoSizes, [16, 32, 48])
+  assert.match(await read("../index.html"), /<link rel="icon" href="\/favicon\.ico"/)
 })
