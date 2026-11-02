@@ -422,6 +422,81 @@ export function createHermesGatewayBridge({
     throw new Error("Hermes dashboard ticket request failed")
   }
 
+  /**
+   * Authenticated GET against the dashboard REST API using the logged-in cookieJar.
+   * Mirrors mintTicket: when the stored cookie was rejected (401) it logs in again once
+   * and retries, so a dashboard-side session expiry is invisible to callers.
+   */
+  async function dashboardApiGet(pathname, { attempt = 0 } = {}) {
+    if (!available) throw new Error("Hermes gateway is not configured")
+    let cookies = cookieJar
+    try {
+      // loginDashboard() memoizes its in-flight promise but starts a fresh POST once the
+      // previous one settled — calling it unconditionally made every list refresh
+      // re-authenticate, adding ~1-6s of latency per request.
+      if (!cookies) cookies = await loginDashboard()
+      const request = () => fetchImpl(new URL(pathname, dashboardBaseUrl), {
+        headers: { cookie: cookies, accept: "application/json" },
+        // The first dashboard read after a cold start can take ~12s (SQLite +
+        // maintenance work), well past a 10s budget; retry once instead of 502ing.
+        signal: AbortSignal.timeout(20_000),
+        cache: "no-store",
+      })
+      let response
+      try {
+        response = await request()
+      } catch {
+        if (attempt === 0) return dashboardApiGet(pathname, { attempt: 1 })
+        throw new Error("Hermes dashboard request failed")
+      }
+      if (response.status === 401 && attempt === 0) {
+        if (cookieJar === cookies) cookieJar = ""
+        cookies = await loginDashboard()
+        return dashboardApiGet(pathname, { attempt: 1 })
+      }
+      return response
+    } catch (error) {
+      throw error instanceof Error ? error : new Error("Hermes dashboard request failed")
+    }
+  }
+
+  // Sessions ids are injected into a dashboard URL path; anything outside the
+  // Hermes session-id alphabet is rejected before it ever reaches a fetch call.
+  const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/
+
+  async function listSessions({ limit = 30, offset = 0 } = {}) {
+    const boundedLimit = Number.isFinite(limit) ? Math.min(Math.max(Math.trunc(limit), 1), 100) : 30
+    const boundedOffset = Number.isFinite(offset) ? Math.max(Math.trunc(offset), 0) : 0
+    const query = new URLSearchParams({
+      limit: String(boundedLimit),
+      offset: String(boundedOffset),
+      order: "recent",
+      exclude_sources: "cron",
+    })
+    const response = await dashboardApiGet(`/api/sessions?${query}`)
+    if (!response.ok) throw new Error("Hermes dashboard sessions request failed")
+    let result
+    try { result = await response.json() } catch { throw new Error("Hermes dashboard sessions request failed") }
+    const sessions = Array.isArray(result?.sessions) ? result.sessions : []
+    return {
+      sessions,
+      total: Number.isFinite(result?.total) ? result.total : sessions.length,
+      limit: boundedLimit,
+      offset: boundedOffset,
+    }
+  }
+
+  async function getSessionMessages(sessionId) {
+    if (typeof sessionId !== "string" || !SESSION_ID_PATTERN.test(sessionId)) {
+      throw new Error("Invalid Hermes session id")
+    }
+    const response = await dashboardApiGet(`/api/sessions/${sessionId}/messages`)
+    if (!response.ok) throw new Error("Hermes dashboard session messages request failed")
+    let result
+    try { result = await response.json() } catch { throw new Error("Hermes dashboard session messages request failed") }
+    return result
+  }
+
   async function openGateway() {
     const ticket = await mintTicket()
     const dashboard = new URL("/api/ws", dashboardBaseUrl)
@@ -451,7 +526,7 @@ export function createHermesGatewayBridge({
     return socket
   }
 
-  return { available, loginDashboard, mintTicket, openGateway }
+  return { available, loginDashboard, mintTicket, openGateway, listSessions, getSessionMessages }
 }
 
 
@@ -496,7 +571,7 @@ export function createAppServer({
     wsConnectFactory,
   })
   const gatewayWss = new WebSocketServer({ noServer: true })
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     const pathname = new URL(request.url, "http://localhost").pathname
     if (requiresAuth) {
       if (!hasAccess(request, accessUsername, accessPassword)) {
@@ -524,6 +599,54 @@ export function createAppServer({
     if (pathname === "/api/gateway/status" && request.method === "GET") {
       response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" })
       response.end(JSON.stringify({ available: gateway.available }))
+      return
+    }
+    if (pathname === "/api/sessions" && request.method === "GET") {
+      const query = new URL(request.url, "http://localhost").searchParams
+      const limit = Number(query.get("limit") ?? 30)
+      const offset = Number(query.get("offset") ?? 0)
+      const headers = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
+      // An unconfigured gateway is a normal UI state ("history unavailable"), not an error.
+      if (!gateway.available) {
+        response.writeHead(200, headers)
+        response.end(JSON.stringify({ sessions: [], total: 0, limit: 30, offset: 0, available: false }))
+        return
+      }
+      try {
+        const result = await gateway.listSessions({ limit, offset })
+        response.writeHead(200, headers)
+        response.end(JSON.stringify({ ...result, available: true }))
+      } catch (error) {
+        console.error("/api/sessions proxy failed:", error?.message ?? error)
+        // A JSON body keeps the client's error path distinct from a static 502 page.
+        response.writeHead(502, headers)
+        response.end(JSON.stringify({ sessions: [], total: 0, limit: 30, offset: 0, available: false, error: "Hermes dashboard sessions request failed" }))
+      }
+      return
+    }
+    if (request.method === "GET" && pathname.startsWith("/api/sessions/")) {
+      const match = /^\/api\/sessions\/([^/]+)\/messages$/.exec(pathname)
+      const sessionId = match?.[1] ?? ""
+      const headers = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
+      if (!/^[A-Za-z0-9_-]+$/.test(sessionId) || sessionId.includes("..")) {
+        sendText(response, 400, "Invalid session id")
+        return
+      }
+      if (!gateway.available) {
+        response.writeHead(200, headers)
+        response.end(JSON.stringify({ messages: [], available: false }))
+        return
+      }
+      try {
+        const result = await gateway.getSessionMessages(sessionId)
+        const body = Array.isArray(result) ? { messages: result } : result && typeof result === "object" ? { ...result } : { messages: [] }
+        body.available = true
+        response.writeHead(200, headers)
+        response.end(JSON.stringify(body))
+      } catch {
+        response.writeHead(502, headers)
+        response.end(JSON.stringify({ messages: [], available: false, error: "Hermes dashboard session messages request failed" }))
+      }
       return
     }
     try {

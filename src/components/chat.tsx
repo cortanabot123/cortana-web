@@ -4,6 +4,7 @@ import {
   BellIcon,
   BrainIcon,
   LoaderCircleIcon,
+  MenuIcon,
   MessageCircleDashedIcon,
   MessageSquarePlusIcon,
   MonitorIcon,
@@ -39,6 +40,8 @@ import {
   InputGroupTextarea,
 } from "@/components/ui/input-group"
 import { Message, MessageContent } from "@/components/ui/message"
+import { SessionSidebar } from "@/components/session-sidebar"
+import { loadSidebarCollapsed, saveSidebarCollapsed } from "@/hooks/use-session-list"
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -151,6 +154,9 @@ export function Chat() {
   const [updatedWorkerActive, setUpdatedWorkerActive] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [theme, setTheme] = React.useState<ThemePreference>(() => loadThemePreference())
+  const [sidebarMobileOpen, setSidebarMobileOpen] = React.useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(() => loadSidebarCollapsed())
+  const [activeStoredSessionId, setActiveStoredSessionId] = React.useState<string | null>(() => loadHermesGatewaySessionId())
   const [reasoning, setReasoning] = React.useState<ReasoningEffort | null>(null)
   const [reasoningBusy, setReasoningBusy] = React.useState(false)
   const [reasoningNote, setReasoningNote] = React.useState<string | null>(null)
@@ -579,6 +585,7 @@ export function Chat() {
           if (typeof resumed.stored_session_id === "string" && resumed.stored_session_id) {
             gatewayStoredSessionIdRef.current = resumed.stored_session_id
             saveHermesGatewaySessionId(resumed.stored_session_id)
+            setActiveStoredSessionId(resumed.stored_session_id)
           }
           applyReconciledSession(resumed)
           setLatestTurnStatus(turnActiveCountRef.current > 0 ? "已与 Hermes 状态同步" : "")
@@ -655,6 +662,7 @@ export function Chat() {
               : storedSessionId
             gatewayStoredSessionIdRef.current = resolvedStoredId
             saveHermesGatewaySessionId(resolvedStoredId)
+            setActiveStoredSessionId(resolvedStoredId)
             const resumedMessages = Array.isArray(resumed.messages) ? normalizeGatewayMessages(resumed.messages) : []
             const resumedTranscript: ChatMessage[] = resumedMessages.map((message) => ({ ...message, id: createSessionId() }))
             gatewayResumedMessagesRef.current = resumedMessages
@@ -723,6 +731,7 @@ export function Chat() {
           lastSeqRef.current.clear()
           gatewayStoredSessionIdRef.current = created.storedSessionId
           saveHermesGatewaySessionId(created.storedSessionId)
+          setActiveStoredSessionId(created.storedSessionId)
         }
         return gatewaySessionIdRef.current ?? ""
       } catch (cause) {
@@ -1177,10 +1186,56 @@ export function Chat() {
     setTurnStartedAt(null)
     setLatestTurnStatus("")
     clearHermesGatewaySessionId()
+    setActiveStoredSessionId(null)
     setUnread(false)
     setMessages([])
     setDraft("")
     setError(null)
+  }
+
+  async function selectConversation(sessionId: string) {
+    if (busy || sessionId === gatewayStoredSessionIdRef.current) return
+    setError(null)
+    gatewayEpochRef.current += 1
+    cancelGatewayReconnect()
+    gatewayReconnectAttemptRef.current = 0
+    gatewayClientRef.current?.close()
+    gatewayClientRef.current = null
+    gatewaySessionIdRef.current = null
+    gatewayConnectPromiseRef.current = null
+    gatewayTurnRef.current = null
+    gatewayEventTurnsRef.current.clear()
+    lastSeqRef.current.clear()
+    clearActiveTurns()
+    // Store the target id BEFORE reconnecting so ensureGatewaySession takes the resume
+    // path; with hydrated=false the resumed transcript replaces the visible messages.
+    gatewayStoredSessionIdRef.current = sessionId
+    saveHermesGatewaySessionId(sessionId)
+    setActiveStoredSessionId(sessionId)
+    gatewayHydratedRef.current = false
+    gatewayDisconnectedRef.current = false
+    gatewayResumedMessagesRef.current = null
+    setUnread(false)
+    setMessages([])
+    setDraft("")
+    try {
+      await ensureGatewaySession()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to open that conversation.")
+      scheduleGatewayReconnect()
+    }
+  }
+
+  function toggleSidebar() {
+    if (window.matchMedia("(min-width: 1024px)").matches) {
+      setSidebarCollapsed((current) => {
+        const next = !current
+        saveSidebarCollapsed(next)
+        return next
+      })
+    } else {
+      setSidebarMobileOpen((open) => !open)
+    }
   }
 
   React.useEffect(() => {
@@ -1316,10 +1371,40 @@ export function Chat() {
 
   return (
     <MessageScrollerProvider autoScroll>
-      <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-full min-h-0">
+        <SessionSidebar
+          activeSessionId={activeStoredSessionId}
+          busy={busy}
+          mobileOpen={sidebarMobileOpen}
+          collapsed={sidebarCollapsed}
+          onSelect={(sessionId) => void selectConversation(sessionId)}
+          onNewConversation={resetThread}
+          onCloseMobile={() => setSidebarMobileOpen(false)}
+        />
+        {sidebarMobileOpen && (
+          <div
+            role="presentation"
+            data-slot="session-sidebar-overlay"
+            className="fixed inset-0 z-30 bg-foreground/40 lg:hidden"
+            onClick={() => setSidebarMobileOpen(false)}
+          />
+        )}
+        <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         <header className="border-b border-border/70 bg-background/95 px-4 pb-3 pt-[max(env(safe-area-inset-top),0.75rem)] backdrop-blur">
           <div className="mx-auto flex w-full max-w-3xl items-start justify-between gap-3">
           <div className="flex min-w-0 items-center self-stretch">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="-ml-2 mr-1 shrink-0"
+              aria-label={sidebarMobileOpen ? "Close conversation history" : "Open conversation history"}
+              aria-expanded={sidebarMobileOpen || !sidebarCollapsed}
+              aria-controls="cortana-session-sidebar"
+              data-slot="sidebar-toggle"
+              onClick={toggleSidebar}
+            >
+              {sidebarMobileOpen ? <XIcon /> : <MenuIcon />}
+            </Button>
             <span className="truncate text-[0.9375rem] font-medium leading-none">Cortana</span>
           </div>
 
@@ -1661,10 +1746,11 @@ export function Chat() {
           <p className="px-2 pt-1 text-[10px] leading-none text-muted-foreground">
             {slashRunHint ? <span data-slash-hint className="text-primary">Press Enter to run {slashRunHint}</span> : null}
             {slashRunHint ? " · " : null}
-            {reasoningNote ? <span data-reasoning-note className="text-primary">{reasoningNote}</span> : null}
-            {reasoningNote ? " · " : null}build {__CORTANA_BUILD_ID__}
+          {reasoningNote ? <span data-reasoning-note className="text-primary">{reasoningNote}</span> : null}
+          {reasoningNote ? " · " : null}build {__CORTANA_BUILD_ID__}
           </p>
           </div>
+        </div>
         </div>
       </div>
     </MessageScrollerProvider>
