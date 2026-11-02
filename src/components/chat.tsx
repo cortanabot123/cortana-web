@@ -7,11 +7,11 @@ import {
   MenuIcon,
   MessageCircleDashedIcon,
   MessageSquarePlusIcon,
-  MonitorIcon,
   MoonIcon,
   PaperclipIcon,
   PlusIcon,
   SunIcon,
+  SunMoonIcon,
   XIcon,
 } from "lucide-react"
 
@@ -1413,7 +1413,7 @@ export function Chat() {
               <DropdownMenuTrigger
                 render={
                   <Button variant="outline" size="icon" aria-label={`Theme: ${theme}`}>
-                    {theme === "dark" ? <MoonIcon /> : theme === "light" ? <SunIcon /> : <MonitorIcon />}
+                    {theme === "dark" ? <MoonIcon /> : theme === "light" ? <SunIcon /> : <SunMoonIcon />}
                   </Button>
                 }
               />
@@ -1421,7 +1421,7 @@ export function Chat() {
                 <DropdownMenuRadioGroup value={theme} onValueChange={(value) => changeTheme(value as ThemePreference)}>
                   <DropdownMenuRadioItem value="light" closeOnClick><SunIcon />Light</DropdownMenuRadioItem>
                   <DropdownMenuRadioItem value="dark" closeOnClick><MoonIcon />Dark</DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="system" closeOnClick><MonitorIcon />System</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="system" closeOnClick><SunMoonIcon />System</DropdownMenuRadioItem>
                 </DropdownMenuRadioGroup>
               </DropdownMenuContent>
             </DropdownMenu>
